@@ -15,19 +15,26 @@ git clone git@github.com:Ema639/ozon_parser.git
 cd ozon_parser
 ```
 
-### 2. Установить зависимости
+### 2. Создать виртуальное окружение и активировать его
+
+```bash
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+```
+
+### 3. Установить зависимости
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Скачать браузер для camoufox (обязательный шаг)
+### 4. Скачать браузер для camoufox (обязательный шаг)
 
 ```bash
 python -m camoufox fetch
 ```
 
-> Без этого шага парсер не запустится — camoufox скачивает патченый Firefox (~100 МБ).
+> Без этого шага парсер не запустится — camoufox скачивает модифицированный Firefox (~100 МБ).
 
 ## Запуск
 
@@ -52,14 +59,14 @@ python generate_report.py
 ## Структура проекта
 
 ```
-.
-|- ozon_parser.py       # Парсер цен (Excel -> camoufox -> SQLite -> статистика)
-|- generate_report.py   # Генератор Word-отчёта
-|- requirements.txt     # Зависимости Python
-|- ИНДЕКС ЦЕН - ТЕСТОВОЕ ЗАДАНИЕ АНАЛИТИК ДАННЫХ.xlsx  # Входные данные
-|- prices.db            # Генерируется автоматически
-|- Отчёт_тестовое_задание.docx  # Генерируется автоматически
+ozon_parser/
+├── ozon_parser.py      # Парсер цен (Excel -> camoufox -> SQLite -> статистика)
+├── generate_report.py  # Генератор Word-отчёта
+├── requirements.txt    # Зависимости Python
+└── ИНДЕКС ЦЕН - ТЕСТОВОЕ ЗАДАНИЕ АНАЛИТИК ДАННЫХ.xlsx  # Входные данные
 ```
+
+> `prices.db` и `Отчёт_тестовое_задание.docx` генерируются при запуске и не включены в репозиторий.
 
 ## Требования
 

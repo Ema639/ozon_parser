@@ -11,8 +11,8 @@ Pipeline: Excel-файл → парсинг цен Ozon через camoufox → 
 ### 1. Клонировать репозиторий
 
 ```bash
-git clone <url>
-cd <папка>
+git clone git@github.com:Ema639/ozon_parser.git
+cd ozon_parser
 ```
 
 ### 2. Установить зависимости

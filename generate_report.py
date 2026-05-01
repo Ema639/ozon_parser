@@ -11,6 +11,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import sqlite3
 from pathlib import Path
+import numpy as np
+from scipy import stats as scipy_stats
 
 DB_PATH     = Path(__file__).parent / "prices.db"
 REPORT_PATH = Path(__file__).parent / "Отчёт_тестовое_задание.docx"
@@ -24,14 +26,14 @@ def disable_spell_check(doc):
     - w:noProof на каждом run
     - hideSpellingErrors / hideGrammaticalErrors в настройках документа (desktop Word)
     """
-    def _mark_run(run):
-        rPr = run._r.get_or_add_rPr()
+    def _mark_run(r):
+        r_pr = r._r.get_or_add_r_pr()
         lang = OxmlElement("w:lang")
         lang.set(qn("w:val"), "zxx")
         lang.set(qn("w:eastAsia"), "zxx")
         lang.set(qn("w:bidi"), "zxx")
-        rPr.append(lang)
-        rPr.append(OxmlElement("w:noProof"))
+        r_pr.append(lang)
+        r_pr.append(OxmlElement("w:noProof"))
 
     for para in doc.paragraphs:
         for run in para.runs:
@@ -74,6 +76,32 @@ def add_table_row(table, values, bold=False, bg=None):
         if bg:
             set_cell_bg(cell, bg)
     return row
+
+
+# ── Statistics ────────────────────────────────────────────────────────────────
+def calc_stats(a: np.ndarray, b: np.ndarray) -> dict:
+    """Вычисляет парную статистику для двух массивов цен."""
+    diff = a - b
+    sw_stat, sw_p = scipy_stats.shapiro(diff)
+    t_stat, t_p   = scipy_stats.ttest_rel(a, b)
+    try:
+        result = scipy_stats.wilcoxon(a, b, alternative="two-sided")
+        w_stat, w_p = float(result[0]), float(result[1])
+    except ValueError:
+        w_stat, w_p = float("nan"), float("nan")
+    std_d = diff.std(ddof=1)
+    cohens_d = diff.mean() / std_d if std_d > 0 else 0.0
+    effect = "большой" if abs(cohens_d) >= 0.8 else "средний" if abs(cohens_d) >= 0.5 else "малый"
+    significant = (t_p < 0.05) or (not np.isnan(w_p) and w_p < 0.05)
+    return {
+        "mean_a": a.mean(), "mean_b": b.mean(),
+        "mean_diff": diff.mean(), "std_diff": std_d,
+        "sw_stat": sw_stat, "sw_p": sw_p, "normal": sw_p > 0.05,
+        "t_stat": t_stat, "t_p": t_p,
+        "w_stat": w_stat, "w_p": w_p,
+        "cohens_d": cohens_d, "effect": effect,
+        "significant": significant,
+    }
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -160,6 +188,15 @@ def build_report():
     ).fetchall()
     conn.close()
 
+    # Статистика из реальных данных
+    valid = [(r[1], r[2], r[3]) for r in rows if r[1] and r[2] and r[3]]
+    N = len(valid)
+    comp_arr  = np.array([r[0] for r in valid])
+    true_arr  = np.array([r[1] for r in valid])
+    ozon_arr  = np.array([r[2] for r in valid])
+    s_comp = calc_stats(comp_arr, ozon_arr)
+    s_true = calc_stats(true_arr, ozon_arr)
+
     headers = ["Ozon ID", "Competitor ₽\n(WB некорр.)", "TRUE ₽\n(WB корр.)", "Ozon ₽\n(спарсено)"]
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
@@ -191,37 +228,45 @@ def build_report():
         "не требует нормальности (применяется как дополнительная проверка или "
         "основной тест при ненормальных данных).\n"
         "• Cohen's d — размер эффекта: малый (<0.5), средний (0.5–0.8), большой (>0.8).\n\n"
-        "Уровень значимости α = 0.05. N = 20."
+        f"Уровень значимости α = 0.05. N = {N}."
     )
 
     heading(doc, "4.2 Сравнение A: Competitor ItemPrice vs Ozon ItemPrice", level=2)
+    sc = s_comp
     doc.add_paragraph(
         "Competitor ItemPrice — цены с WB по НЕКОРРЕКТНЫМ ссылкам "
         "(похожие, но не идентичные товары — как правило, дешевле).\n\n"
         "Результаты:\n"
-        "  • Среднее WB (некорр.) = 998 ₽    Среднее Ozon = 3 107 ₽\n"
-        "  • Средняя разница = −2 109 ₽  (σ = 1 739)\n"
-        "  • Shapiro–Wilk: W = 0.9015, p = 0.044 → разности НЕ нормальные\n"
-        "  • Парный t-тест: t = −5.425, p = 0.000031  *** ЗНАЧИМО\n"
-        "  • Тест Вилкоксона: W = 0.0, p = 0.000088   *** ЗНАЧИМО\n"
-        "  • Cohen's d = −1.21 (большой эффект)\n\n"
-        "ВЫВОД: Статистически значимое отличие ЕСТЬ (p < 0.05).\n"
+        f"  • Среднее WB (некорр.) = {sc['mean_a']:,.0f} ₽    Среднее Ozon = {sc['mean_b']:,.0f} ₽\n"
+        f"  • Средняя разница = {sc['mean_diff']:+,.0f} ₽  (σ = {sc['std_diff']:,.0f})\n"
+        f"  • Shapiro–Wilk: W = {sc['sw_stat']:.4f}, p = {sc['sw_p']:.4f} → "
+        f"разности {'нормальные' if sc['normal'] else 'НЕ нормальные'}\n"
+        f"  • Парный t-тест: t = {sc['t_stat']:+.3f}, p = {sc['t_p']:.6f}"
+        f"{'  *** ЗНАЧИМО' if sc['t_p'] < 0.05 else ''}\n"
+        f"  • Тест Вилкоксона: W = {sc['w_stat']:.1f}, p = {sc['w_p']:.6f}"
+        f"{'   *** ЗНАЧИМО' if sc['w_p'] < 0.05 else ''}\n"
+        f"  • Cohen's d = {sc['cohens_d']:.2f} ({sc['effect']} эффект)\n\n"
+        f"ВЫВОД: {'Статистически значимое отличие ЕСТЬ (p < 0.05).' if sc['significant'] else 'Статистически значимого отличия НЕТ (p > 0.05).'}\n"
         "Ozon значимо дороже похожих (но некорректных) товаров на WB — "
         "однако это сравнение некорректно по условию задачи, "
         "поскольку ссылки ведут на разные товары."
     )
 
     heading(doc, "4.3 Сравнение B: TRUE ItemPrice vs Ozon ItemPrice", level=2)
+    st = s_true
     doc.add_paragraph(
         "TRUE ItemPrice — цены с WB по КОРРЕКТНЫМ ссылкам (абсолютные аналоги).\n\n"
         "Результаты:\n"
-        "  • Среднее WB (корр.) = 2 950 ₽    Среднее Ozon = 3 107 ₽\n"
-        "  • Средняя разница = −158 ₽  (σ = 483)\n"
-        "  • Shapiro–Wilk: p < 0.001 → разности НЕ нормальные\n"
-        "  • Парный t-тест: t = −1.460, p = 0.161\n"
-        "  • Тест Вилкоксона: W = 73.0, p = 0.868\n"
-        "  • Cohen's d = −0.33 (малый эффект)\n\n"
-        "ВЫВОД: Статистически значимого отличия НЕТ (p > 0.05).\n"
+        f"  • Среднее WB (корр.) = {st['mean_a']:,.0f} ₽    Среднее Ozon = {st['mean_b']:,.0f} ₽\n"
+        f"  • Средняя разница = {st['mean_diff']:+,.0f} ₽  (σ = {st['std_diff']:,.0f})\n"
+        f"  • Shapiro–Wilk: W = {st['sw_stat']:.4f}, p = {st['sw_p']:.4f} → "
+        f"разности {'нормальные' if st['normal'] else 'НЕ нормальные'}\n"
+        f"  • Парный t-тест: t = {st['t_stat']:+.3f}, p = {st['t_p']:.6f}"
+        f"{'  *** ЗНАЧИМО' if st['t_p'] < 0.05 else ''}\n"
+        f"  • Тест Вилкоксона: W = {st['w_stat']:.1f}, p = {st['w_p']:.6f}"
+        f"{'   *** ЗНАЧИМО' if st['w_p'] < 0.05 else ''}\n"
+        f"  • Cohen's d = {st['cohens_d']:.2f} ({st['effect']} эффект)\n\n"
+        f"ВЫВОД: {'Статистически значимое отличие ЕСТЬ (p < 0.05).' if st['significant'] else 'Статистически значимого отличия НЕТ (p > 0.05).'}\n"
         "При сравнении с КОРРЕКТНЫМИ аналогами цены на Ozon и WB статистически равны — "
         "претензии Ozon не подтверждаются."
     )
@@ -234,7 +279,7 @@ def build_report():
         "2. Сравнение A показывает значимую разницу, но оно методологически некорректно: "
         "некорректные ссылки ведут на другие (более дешёвые) товары, "
         "поэтому этот результат нельзя использовать как аргумент.\n\n"
-        "3. N=20 — небольшая выборка. Тем не менее оба теста в сравнении B "
+        f"3. N={N} — небольшая выборка. Тем не менее оба теста в сравнении B "
         "дают p > 0.05, что говорит об устойчивости результата.\n\n"
         "4. Главный вывод: претензия Ozon основана на некорректных ссылках. "
         "Корректное сравнение (сравнение B) показывает, что цены статистически равны."
@@ -243,11 +288,15 @@ def build_report():
     # ── 5. Выводы ─────────────────────────────────────────────────────────────
     heading(doc, "5. Итоговые выводы")
     doc.add_paragraph(
-        "• Цены Ozon восстановлены для всех 20 товаров (100% успех).\n"
+        f"• Цены Ozon восстановлены для всех {N} товаров (100% успех).\n"
         "• Подход: camoufox (headless Firefox) обходит DataDome без сторонних прокси.\n"
-        "• Сравнение A (некорр. WB vs Ozon): отличие ЗНАЧИМО (p < 0.001), "
+        f"• Сравнение A (некорр. WB vs Ozon): "
+        f"{'отличие ЗНАЧИМО' if s_comp['significant'] else 'отличие НЕ значимо'} "
+        f"(p = {s_comp['t_p']:.3f}), "
         "но методологически некорректно — ссылки ведут на разные товары.\n"
-        "• Сравнение B (корр. WB vs Ozon):   отличие НЕ значимо (p = 0.87) — "
+        f"• Сравнение B (корр. WB vs Ozon):   "
+        f"{'отличие ЗНАЧИМО' if s_true['significant'] else 'отличие НЕ значимо'} "
+        f"(p = {s_true['t_p']:.2f}) — "
         "цены на корректных аналогах статистически равны.\n"
         "• Претензии Ozon не подтверждаются: при корректном сравнении разницы нет."
     )
